@@ -1,0 +1,396 @@
+---
+title: "Housing Price Impact Regressions"
+author: "CW"
+date: "March 23, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(readxl)
+housing <- read_excel("~/CWU/KittCo Well Paper/KittCo-Well-Moratorium-Regressions/Housing Working Data.xlsx")
+View(housing)
+
+```
+
+```{r echo=FALSE}
+
+require(car)
+require(lmtest)
+require(clusterSEs)
+require(plyr)
+require(dplyr)
+require(ggplot2)
+require(stargazer)
+require(multiwayvcov)
+require(fANCOVA)
+
+options(scipen=7)
+options(digits=4)
+
+```
+
+```{r echo=FALSE}
+
+# Summary function that allows selection of which coefficients to include 
+# in the coefficient table.  Works with summary.lm and summary.plm objects
+
+my.summary = function(x, rows, digits=3) {
+
+  # Print a few summary elements that are common to both lm and plm model summary objects
+ 
+  cat("Call\n")
+  print(x$call)
+  cat("\nResiduals\n")
+  print(summary(x$residuals))
+  cat("\n")
+  print(coef(x)[rows,])
+
+  # Print elements unique to lm model summary objects
+  
+  if("summary.lm" %in% class(x)) {
+    cat("\nResidual standard error:", round(x$sigma,3), "on", x$df[2], "degrees of freedom")
+    cat(paste(c("\nF-statistic:", " on"," and"), round(x$fstatistic,2), collapse=""),
+        "DF, p-value:",
+        format.pval(pf(x$fstatistic[1L], x$fstatistic[2L], x$fstatistic[3L], 
+                       lower.tail = FALSE), digits=digits))
+
+  # Print elements unique to plm model summary objects  
+  
+  } else if ("summary.plm" %in% class(x)) {
+    cat(paste("\nResidual Sum of Squares: ", signif(deviance(x), 
+                                                  digits), "\n", sep = ""))
+    fstat <- x$fstatistic
+    if (names(fstat$statistic) == "F") {
+      cat(paste("F-statistic: ", signif(fstat$statistic), " on ", 
+                fstat$parameter["df1"], " and ", fstat$parameter["df2"], 
+                " DF, p-value: ", format.pval(fstat$p.value, digits = digits), 
+                "\n", sep = ""))
+    }
+  
+    else {
+      cat(paste("Chisq: ", signif(fstat$statistic), " on ", 
+                fstat$parameter, " DF, p-value: ", format.pval(fstat$p.value, 
+                                                               digits = digits), "\n", sep = ""))
+    }
+  }
+}
+
+```
+
+```{r echo= FALSE}
+
+housing$LNacres <- log(housing$TotalAcres)
+
+housing$MD2UR <- housing$MD2 * housing$Upper * housing$Rural
+housing$MD3LR <- housing$MD3 * housing$Lower * housing$Rural
+
+housing$green.treated <- housing$Green * (housing$MD2UR + housing$MD3LR)
+housing$yellow.treated <- housing$Yellow * (housing$MD2UR + housing$MD3LR)
+housing$red.treated <- housing$Red * (housing$MD2UR + housing$MD3LR)
+
+housing$LargeLot <- ( housing$TotalAcres >= 2 ) * 1
+
+```
+
+# Summary Statistics and Plots for Housing Data
+
+## Plots
+
+### Sales by Year
+
+```{r echo=FALSE}
+
+housing.upper <- subset(housing, housing$Upper==1)
+housing.lower <- subset(housing, housing$Lower==1)
+
+as.tbl(housing)
+
+housing.sales <- tally(group_by(housing, Year, Upper), sort=FALSE)
+as.vector(housing.sales)
+
+housing.graphs <- data.frame(
+  Year = (housing.sales[,1]),
+  Sales = (housing.sales[,3]),
+  Upper = (housing.sales[,2])
+  )
+
+housing.graphs[,3] <- as.factor(housing.graphs[,3])
+Region <- revalue(housing.graphs[,3], c("0" = "Lower", "1" = "Upper"))
+
+KittCo.housing.sales <- ggplot(housing.graphs, aes(x=housing.graphs[,1], y=housing.graphs[,2], fill=Region)) + 
+  geom_area(alpha=0.4, colour="black", size=0.2) + scale_fill_brewer(palette = "PRGn")
+KittCo.housing.sales + labs(x="Year", y="Number of Sales") + labs(title="Number of Housing Sales")
+
+```
+
+### Sales Prices
+
+```{r echo=FALSE}
+
+housing2 <- housing
+housing2$Upper <- revalue(as.factor(housing2$Upper), c("0" = "Lower", "1" = "Upper"))
+housing2$Region <- housing2$Upper
+
+ggplot(housing2, aes(x=as.factor(Year), y=RealPrice)) + geom_boxplot() + facet_grid(Region ~ ., labeller = label_both) + 
+  labs(title="Real Sales Prices, by Year, for Upper/Lower County") + 
+  labs(x="Year", y="Real Prices") + ylim(0,1000000) + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 1))
+
+ggplot(housing2, aes(x=Region, y=RealPrice)) + 
+  geom_boxplot(outlier.colour=NA, notch = TRUE) + ylim(0,600000) +
+  stat_summary(fun.y="mean", geom="point", fill="maroon", shape=23, size=3) + 
+  labs(title = "Distribution of Sales Prices, for Upper/Lower County")
+
+ggplot(housing2, aes(x=RealPrice, fill = Region)) + geom_density(alpha = 0.3) + 
+  labs(title = "Distribution of Sales Prices, for Upper/Lower County") +
+  scale_x_log10() + annotation_logticks()
+
+
+```
+
+## Summary Stats
+
+```{r echo=FALSE}
+
+stargazer(data.frame(housing), type="text")
+stargazer(data.frame(housing.upper), type="text")
+stargazer(data.frame(housing.lower), type="text")
+
+summary(housing$SALE_PRICE)
+summary(housing.upper$SALE_PRICE)
+summary(housing.lower$SALE_PRICE)
+
+```
+
+
+```{r echo=FALSE}
+
+### Create cluster variables
+
+housing$clustervar <- NULL
+housing$clustervar <- (housing$Upper + housing$Upper*housing$Rural + 3*housing$Lower + housing$Lower*housing$Rural)
+
+housing.upper$clustervar <- NULL
+
+housing.upper$clustervar <- (housing.upper$Rural + housing.upper$Rural * housing.upper$LargeLot + 
+                             housing.upper$Rural * housing.upper$LargeLot * housing.upper$Yellow) 
+
+housing.lower$clustervar <- NULL
+housing.lower$clustervar <- (housing.lower$Rural + housing.lower$Rural * housing.lower$LargeLot +
+                               housing.lower$Rural * housing.lower$LargeLot * housing.lower$Yellow)
+
+```
+
+
+## Difference in Difference Estimates
+
+```{r}
+
+### Upper Kittitas County: City vs Rural by MD2
+
+Upper_KittCo_DiD1 <- lm (LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + LNacres + Manufactured + Percent100 + MD2*LargeLot*Rural, data=housing.upper)
+
+summary(Upper_KittCo_DiD1)
+
+Upper_KittCo_DiD1.CRSE <- cluster.vcov(Upper_KittCo_DiD1, housing.upper$clustervar)
+coeftest(Upper_KittCo_DiD1, Upper_KittCo_DiD1.CRSE)
+
+# ### Omitting LNacres, which has many missing values
+# 
+# Upper_KittCo_DiD2 <- lm (LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Manufactured + Percent100 + MD2*Rural, data=housing.upper)
+# 
+# summary(Upper_KittCo_DiD2)
+# 
+# Upper_KittCo_DiD2.CRSE <- cluster.vcov(Upper_KittCo_DiD2, housing.upper$clustervar)
+# coeftest(Upper_KittCo_DiD2, Upper_KittCo_DiD2.CRSE)
+# 
+
+### Lower Kittitas County: City vs Rural by MD3
+
+Lower_KittCo_DiD1 <- lm (LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + LNacres + Manufactured + Percent100 + MD3*LargeLot*Rural, data=housing.lower)
+
+summary(Lower_KittCo_DiD1)
+
+Lower_KittCo_DiD1.CRSE <- cluster.vcov(Lower_KittCo_DiD1, housing.lower$clustervar)
+coeftest(Lower_KittCo_DiD1, Lower_KittCo_DiD1.CRSE)
+
+# ### Omitting LNacres, which has many missing values
+# 
+# Lower_KittCo_DiD2 <- lm (LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Manufactured + Percent100 + MD3*Rural, data=housing.lower)
+# 
+# summary(Lower_KittCo_DiD2)
+# 
+# Lower_KittCo_DiD2.CRSE <- cluster.vcov(Lower_KittCo_DiD2, housing.lower$clustervar)
+# coeftest(Lower_KittCo_DiD2, Lower_KittCo_DiD2.CRSE)
+# 
+
+### Kittitas County: City vs Rural vs Treatment
+
+KittCo_DiD1 <- lm (LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + LNacres + Manufactured + Percent100 + MD2*LargeLot*Rural*Upper  + MD3*LargeLot*Rural*Lower + Year*Upper, data=housing)
+
+summary(KittCo_DiD1)
+
+KittCo_DiD1.CRSE <- cluster.vcov(KittCo_DiD1, housing$clustervar)
+coeftest(KittCo_DiD1, KittCo_DiD1.CRSE)
+
+# ### Omitting LNacres, which has many missing values
+# 
+# KittCo_DiD2 <- lm (LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Manufactured + Percent100 + MD2*Rural*Upper + MD3*Rural*Lower + Year*Upper, data=housing)
+# 
+# summary(KittCo_DiD2)
+# 
+# KittCo_DiD2.CRSE <- cluster.vcov(KittCo_DiD2, housing$clustervar)
+# coeftest(KittCo_DiD2, KittCo_DiD2.CRSE)
+
+```
+
+
+## Fixed Effects Estimation
+
+```{r}
+
+### Entire County
+
+KittCo_FE1 <- lm( LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Manufactured + Percent100 + City + green.treated +  yellow.treated + factor(housing$Year*housing$Precinct_N) -1, data=housing)
+
+my.summary(summary(KittCo_FE1), rows=1:15, digits=3)
+
+  ## The usual CRSE errors
+
+KittCo_FE1.CRSE <- cluster.vcov(KittCo_FE1, housing$clustervar)
+
+coeftest(KittCo_FE1, KittCo_FE1.CRSE)[1:15,]
+
+
+```
+
+```{r}
+install.packages("devtools")
+devtools::install_github("Jiawei-Fu/clusterinfer")
+library(clusterinfer)
+```
+
+```{r}
+
+wildboott(KittCo_FE1, ~ housing$clustervar, beta = "yellow.treated", type = 'six', R = 200)
+
+```
+
+```{r}
+### Upper County Only
+
+KittCo_FE2 <- lm( LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Manufactured + Percent100 + City + green.treated +  yellow.treated + factor(housing.upper$Year*housing.upper$Precinct_N) -1, data=housing.upper)
+
+my.summary(summary(KittCo_FE2), rows=1:15, digits=3)
+
+## The usual CRSE errors
+
+KittCo_FE2.CRSE <- cluster.vcov(KittCo_FE2, housing.upper$clustervar)
+
+coeftest(KittCo_FE2, KittCo_FE2.CRSE)[1:15,]
+
+## Bootstrapped
+
+wildboott(KittCo_FE2, ~ housing.upper$clustervar, beta = "yellow.treated", type = 'six', R = 200)
+
+```
+
+```{r}
+### Lower County Only
+
+KittCo_FE3 <- glm( LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Percent100 + City + green.treated +  yellow.treated + factor(housing.lower$Year*housing.lower$Precinct_N) -1, data=housing.lower)
+
+my.summary(summary(KittCo_FE3), rows=1:15, digits=3)
+
+## The usual CRSE errors
+
+KittCo_FE3.CRSE <- cluster.vcov(KittCo_FE3, housing.lower$clustervar)
+
+coeftest(KittCo_FE3, KittCo_FE3.CRSE)[1:15,]
+
+## Bootstrapped
+
+wildboott(KittCo_FE3, ~ housing.lower$clustervar, beta = "yellow.treated", type = 'six', R = 200)
+
+
+```
+
+```{r}
+### Entire County, Acres > 1
+
+housing.acreage <- subset(housing, housing$TotalAcres > 1)
+housing.acreage$clustervar <- subset(housing$clustervar, housing$TotalAcres > 1)
+
+KittCo_FE4 <- glm( LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Percent100 + City + green.treated +  yellow.treated + factor(Year*Precinct_N) -1, data=housing.acreage)
+
+my.summary(summary(KittCo_FE4), rows=1:15, digits=3)
+
+  ## The usual CRSE errors
+
+KittCo_FE4.CRSE <- cluster.vcov(KittCo_FE4, housing.acreage$clustervar)
+
+coeftest(KittCo_FE4, KittCo_FE1.CRSE)[1:15,]
+
+
+```
+
+```{r}
+### Manufactured Homes, Acres > 1
+
+housing.acreage.manufactured <- subset(housing.acreage, housing.acreage$Manufactured == 1)
+
+housing.acreage.manufactured$clustervar <- subset(housing.acreage$clustervar, housing.acreage$Manufactured == 1)
+
+KittCo_FE5.glm <- glm( LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Percent100 + green.treated +  yellow.treated + factor(Year*Precinct_N) -1, data=housing.acreage.manufactured)
+
+my.summary(summary(KittCo_FE5.glm), rows=1:15, digits=3)
+
+  ## Can't calculate CRSE as all observations are in Upper/Rural
+
+```
+
+```{r}
+
+### Repeat Sales
+
+  ## Entire County, Acres > 1
+
+housing.acreage.repeat <- subset(housing.acreage, housing.acreage$Repeat ==1)
+housing.acreage.repeat$clustervar <- subset(housing.acreage$clustervar, housing.acreage$Repeat == 1)
+
+KittCo_FE6 <- glm( LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Percent100 + City + green.treated +  yellow.treated + factor(Year*Precinct_N) -1, data=housing.acreage.repeat)
+
+my.summary(summary(KittCo_FE6), rows=1:15, digits=3)
+
+  ## The usual CRSE errors
+
+KittCo_FE6.CRSE <- cluster.vcov(KittCo_FE6, housing.acreage.repeat$clustervar)
+
+coeftest(KittCo_FE6, KittCo_FE6.CRSE)[1:15,]
+
+
+```
+
+```{r}
+  ## Upper County Only, Acres > 1
+
+housing.acreage.repeat.upper <- subset(housing.acreage.repeat, housing.acreage.repeat$Upper ==1)
+housing.acreage.repeat.upper$clustervar <- subset(housing.acreage.repeat$clustervar, housing.acreage.repeat$Upper == 1)
+
+KittCo_FE7 <- glm( LNprice ~ LNSqft + LNAge + Bedrooms + Bathrooms + Garage + Percent100 + City + green.treated +  yellow.treated + factor(Year*Precinct_N) -1, data=housing.acreage.repeat.upper)
+
+my.summary(summary(KittCo_FE7), rows=1:15, digits=3)
+
+  ## The usual CRSE errors
+
+KittCo_FE7.CRSE <- cluster.vcov(KittCo_FE7, housing.acreage.repeat.upper$clustervar)
+
+coeftest(KittCo_FE7, KittCo_FE7.CRSE)[1:15,]
+
+
+```
+
