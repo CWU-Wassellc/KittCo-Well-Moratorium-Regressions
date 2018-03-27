@@ -1,0 +1,433 @@
+---
+title: "Bareland Regressions"
+author: "C Wassell"
+date: "March 26, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+barren <- read_excel("~/CWU/KittCo Well Paper/KittCo-Well-Moratorium-Regressions/Barren Lands Working Data.xlsx")
+View(barren)
+```
+
+```{r}
+
+require(car)
+require(lmtest)
+require(clusterSEs)
+require(dplyr)
+require(ggplot2)
+require(stargazer)
+require(multiwayvcov)
+require(fANCOVA)
+
+options(scipen=7)
+options(digits=4)
+
+```
+
+``` {r echo=FALSE}
+
+# Summary function that allows selection of which coefficients to include 
+# in the coefficient table.  Works with summary.lm and summary.plm objects
+
+my.summary = function(x, rows, digits=3) {
+
+  # Print a few summary elements that are common to both lm and plm model summary objects
+ 
+  cat("Call\n")
+  print(x$call)
+  cat("\nResiduals\n")
+  print(summary(x$residuals))
+  cat("\n")
+  print(coef(x)[rows,])
+
+  # Print elements unique to lm model summary objects
+  
+  if("summary.lm" %in% class(x)) {
+    cat("\nResidual standard error:", round(x$sigma,3), "on", x$df[2], "degrees of freedom")
+    cat(paste(c("\nF-statistic:", " on"," and"), round(x$fstatistic,2), collapse=""),
+        "DF, p-value:",
+        format.pval(pf(x$fstatistic[1L], x$fstatistic[2L], x$fstatistic[3L], 
+                       lower.tail = FALSE), digits=digits))
+
+  # Print elements unique to plm model summary objects  
+  
+  } else if ("summary.plm" %in% class(x)) {
+    cat(paste("\nResidual Sum of Squares: ", signif(deviance(x), 
+                                                  digits), "\n", sep = ""))
+    fstat <- x$fstatistic
+    if (names(fstat$statistic) == "F") {
+      cat(paste("F-statistic: ", signif(fstat$statistic), " on ", 
+                fstat$parameter["df1"], " and ", fstat$parameter["df2"], 
+                " DF, p-value: ", format.pval(fstat$p.value, digits = digits), 
+                "\n", sep = ""))
+    }
+  
+    else {
+      cat(paste("Chisq: ", signif(fstat$statistic), " on ", 
+                fstat$parameter, " DF, p-value: ", format.pval(fstat$p.value, 
+                                                               digits = digits), "\n", sep = ""))
+    }
+  }
+}
+
+```
+
+
+```{r}
+
+barren$lsales <- log(barren$RealPrices)
+barren$lacres <- log(barren$TotalAcres)
+
+barren$green.treated <- barren$Green * barren$md2 * barren$Upper * barren$Rural
+
+barren$yellow.treated <- barren$Yellow * barren$md2 * barren$Upper * barren$Rural
+
+barren$price.per.acre <- barren$RealPrices / barren$TotalAcres
+
+```
+
+Summary Data for Barren Lands
+
+
+```{r}
+
+### Summary Statistics
+
+stargazer(data.frame(barren), type="text")
+
+barren.upper <- subset(barren, Upper==1)
+barren.lower <- subset(barren, Upper==0)
+
+stargazer(data.frame(barren.upper), type="text")
+stargazer(data.frame(barren.lower), type="text")
+
+### Sales per year
+
+as.tbl(barren)
+barren.sales <- tally(group_by(barren,YEAR, Upper), sort=FALSE)
+as.vector(barren.sales)
+
+barren.graphs <- data.frame(
+  Year = (barren.sales[,1]),
+  Sales = (barren.sales[,3]),
+  Upper = (barren.sales[,2])
+  )
+
+barren.graphs[,3] <- revalue(as.factor(barren.graphs[,3]), c("0" = "Lower", "1" = "Upper"))
+barren.graphs$Region <- barren.graphs[,3]
+
+KittCo.barren.sales <- ggplot(barren.graphs, aes(x=barren.graphs[,1], y=barren.graphs[,2])) + 
+  geom_bar(stat = "identity", position = "identity")
+
+KittCo.barren.sales + labs(x="Year", y="Number of Sales") + labs(title="Number of Bareland Sales")
+
+### Acres
+
+barren.acres <- tally(group_by(barren,TotalAcres), sort=FALSE)
+barren.acres
+as.vector(barren.acres)
+
+summary(barren$TotalAcres)
+
+hist(subset(barren$TotalAcres, barren$TotalAcres < 60), breaks=25)
+
+barren.acres.subset <- subset(barren$TotalAcres, barren$TotalAcres < 60)
+
+as.vector(barren.acres.subset)
+
+KittCo.barren.acres <- ggplot(NULL, aes(x=barren.acres.subset)) + 
+  geom_histogram(binwidth=2.5, fill="white", colour="black")
+
+KittCo.barren.acres + labs(x="Size of lot in Acres", y="Number of Lots") +
+  labs(title="Distribution of Bareland Lot Acreage, for Lots < 60 Acres")
+
+### Sales Prices
+
+barren2 <- barren
+barren2$Upper <- revalue(as.factor(barren2$Upper), c("0" = "Lower", "1" = "Upper"))
+barren2$Region <- barren2$Upper
+
+ggplot(barren2, aes(x=as.factor(YEAR), y=RealPrices)) + geom_boxplot() + facet_grid(Region ~ ., labeller = label_both) + 
+  labs(title="Real Sales Prices for Bareland, by Year, for Upper/Lower County") + 
+  labs(x="Year", y="Real Prices") + ylim(0, 1000000) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 1))
+
+ggplot(barren2, aes(x=as.factor(YEAR), y=price.per.acre)) + geom_boxplot() + facet_grid(Upper ~ ., labeller=label_both) + 
+  labs(title="Real Sales Prices per Bareland Acre, by Year, for Upper/Lower County") +
+  labs(x="Year", y="Real Price per Acre") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 1))
+
+ggplot(barren2, aes(x=as.factor(Upper), y=RealPrices)) + 
+  geom_boxplot(outlier.colour = NA, notch = TRUE) + ylim(0,750000) + 
+  stat_summary(fun.y="mean", geom="point", fill="maroon", shape=23, size=3) + 
+  labs(title = "Distribution of Sales Prices for Bareland, for Upper/Lower County") + 
+  labs(x="Upper/Lower Kittitas County", y="Real Prices")
+
+ggplot(barren2, aes(x=RealPrices, fill = Region)) + geom_density(alpha = 0.3) + 
+  labs(title = "Distribution of Sales Prices, for Upper/Lower County") + xlim(0,1250000)
+
+
+```
+
+Fixed Effects Estimation
+
+```{r}
+
+Barren_FE1 <- lm( lsales ~ lacres + Upper + City + Percent100 + green.treated +  yellow.treated + factor(barren$YEAR*barren$Precinct_N) -1, data = barren)
+
+my.summary(summary(Barren_FE1), rows=1:15, digits=3)
+
+
+### Subset to exclude DoR code 94 (open space)
+
+barren.undeveloped <- subset(barren, DoR_Code==91)
+
+Barren_FE3 <- glm( lsales ~ lacres + Upper + City + Percent100 + green.treated +  yellow.treated + factor(YEAR*Precinct_N) -1, data = barren.undeveloped)
+
+my.summary(summary(Barren_FE3), rows=1:15, digits=3)
+
+
+```
+
+```{r}
+
+### Regressions by Upper/Lower, and by acreage
+
+barren.undeveloped.upper <- subset(barren.undeveloped, Upper==1)
+barren.undeveloped.lower <- subset(barren.undeveloped, Upper==0)
+barren.undeveloped.acreage <- subset(barren.undeveloped, TotalAcres > 0.99)
+barren.undeveloped.upper.acreage <- subset(barren.undeveloped.upper, TotalAcres > 0.99)
+barren.undeveloped.lower.acreage <- subset(barren.undeveloped.lower, TotalAcres > 0.99)
+
+  ## Upper only
+
+Barren_FE5 <- glm( lsales ~ lacres + City + Percent100 + green.treated +  yellow.treated + factor(YEAR*Precinct_N) -1, data = barren.undeveloped.upper)
+
+my.summary(summary(Barren_FE5), rows=1:15, digits=3)
+
+  ## Lower only
+
+Barren_FE6 <- glm( lsales ~ lacres + City + Percent100 + green.treated +  yellow.treated + factor(YEAR*Precinct_N) -1, data = barren.undeveloped.lower)
+
+my.summary(summary(Barren_FE6), rows=1:15, digits=3)
+
+  ## Whole county, Acres > 0.999
+
+Barren_FE7 <- glm( lsales ~ lacres + City + Upper + Percent100 + green.treated +  yellow.treated + factor(YEAR*Precinct_N) -1, data = barren.undeveloped.acreage)
+
+my.summary(summary(Barren_FE7), rows=1:15, digits=3)
+
+  ## Upper county, Acres > 0.999
+
+Barren_FE8 <- glm( lsales ~ lacres + City + Percent100 + green.treated +  yellow.treated  + factor(YEAR*Precinct_N) -1, data = barren.undeveloped.upper.acreage)
+
+my.summary(summary(Barren_FE8), rows=1:15, digits=3)
+
+  ## Lower county, Acres > 0.999
+
+Barren_FE9 <- glm( lsales ~ lacres + City + Percent100 + green.treated +  yellow.treated + factor(YEAR*Precinct_N) -1, data = barren.undeveloped.lower.acreage)
+
+my.summary(summary(Barren_FE9), rows=1:15, digits=3)
+
+
+```
+
+```{r}
+
+### Here I calculate cluster robust standard errors (CRSE) in the usual manner.
+
+barren$upper.rural <- barren$Upper * barren$Rural
+
+barren$lower.rural <- (1-barren$Upper) * barren$Rural
+
+barren.undeveloped$upper.rural <- barren.undeveloped$Upper * barren.undeveloped$Rural
+
+barren.undeveloped$lower.rural <- (1-barren.undeveloped$Upper) * barren.undeveloped$Rural
+
+Barren_FE1.CRSE <- cluster.vcov(Barren_FE1, cbind(barren$City, barren$upper.rural, barren$lower.rural))
+coeftest(Barren_FE1, Barren_FE1.CRSE)[1:10,]
+
+Barren_FE3.CRSE <- cluster.vcov(Barren_FE3, cbind(barren.undeveloped$City, barren.undeveloped$upper.rural, barren.undeveloped$lower.rural))
+coeftest(Barren_FE3, Barren_FE3.CRSE)[1:10,]
+
+Barren_FE5.CRSE <- cluster.vcov(Barren_FE5, cbind(barren.undeveloped.upper$City, barren.undeveloped.upper$Rural))
+coeftest(Barren_FE5, Barren_FE5.CRSE)[1:10,]
+
+Barren_FE6.CRSE <- cluster.vcov(Barren_FE6, cbind(barren.undeveloped.lower$City, barren.undeveloped.lower$Rural))
+coeftest(Barren_FE6, Barren_FE6.CRSE)[1:10,]
+
+Barren_FE7.CRSE <- cluster.vcov(Barren_FE7, cbind(barren.undeveloped.acreage$City, barren.undeveloped.upper.acreage$Rural, barren.undeveloped.lower.acreage$Rural))
+coeftest(Barren_FE7, Barren_FE7.CRSE)[1:10,]
+
+Barren_FE8.CRSE <- cluster.vcov(Barren_FE8, cbind(barren.undeveloped.upper.acreage$City, barren.undeveloped.upper.acreage$Rural))
+coeftest(Barren_FE8, Barren_FE8.CRSE)[1:10,]
+
+Barren_FE9.CRSE <- cluster.vcov(Barren_FE9, cbind(barren.undeveloped.lower.acreage$City, barren.undeveloped.lower.acreage$Rural))
+coeftest(Barren_FE9, Barren_FE9.CRSE)[1:10,]
+
+
+```
+
+``` {r}
+library(clusterinfer)
+```
+
+```{r}
+
+wildboott(Barren_FE1, ~ barren$City + barren$upper.rural + barren$lower.rural, beta = "yellow.treated", type = 'six', R = 200)
+
+```
+
+
+
+```{r} 
+
+### Now use the wild cluster bootstrap method.
+
+barren$clustervar <- NULL
+barren$Lower <- (1 - barren$Upper)
+barren$clustervar <- (barren$Upper + barren$Upper*barren$City + 3*barren$Lower + barren$Lower*barren$City)
+
+barren.undeveloped$clustervar <- NULL
+barren.undeveloped$Lower <- (1-barren.undeveloped$Upper)
+barren.undeveloped$clustervar <- (barren.undeveloped$Upper + barren.undeveloped$Upper*barren.undeveloped$City + 3*barren.undeveloped$Lower + barren.undeveloped$Lower*barren.undeveloped$City)
+
+barren.undeveloped.acreage$clustervar <- NULL
+barren.undeveloped.acreage$Lower <- (1-barren.undeveloped.acreage$Upper)
+barren.undeveloped.acreage$clustervar <- (barren.undeveloped.acreage$Upper + barren.undeveloped.acreage$Upper*barren.undeveloped.acreage$City + 3*barren.undeveloped.acreage$Lower + barren.undeveloped.acreage$Lower*barren.undeveloped.acreage$City)
+
+Barren_FE1.glm <- glm( lsales ~ lacres + Upper + City + Percent100 + green.treated +  yellow.treated + as.numeric(factor(YEAR*Precinct_N)) -1, data = barren)
+
+Barren_FE1.wild <- cluster.wild.glm(Barren_FE1.glm, dat = barren, cluster= ~ clustervar)
+
+Barren_FE3.glm <- glm( lsales ~ lacres + Upper + City + Percent100 + green.treated +  yellow.treated + as.numeric(factor(YEAR*Precinct_N)) -1, data = barren.undeveloped)
+
+Barren_FE3.wild <- cluster.wild.glm(Barren_FE3.glm, dat = barren.undeveloped, cluster= ~ clustervar)
+
+Barren_FE5.glm <- glm( lsales ~ lacres + City + Percent100 + green.treated +  yellow_red.treated + as.numeric(factor(YEAR*Precinct_N)) -1, data = barren.undeveloped.upper)
+
+Barren_FE5.wild <- cluster.wild.glm(Barren_FE5.glm, dat = barren.undeveloped.upper, cluster= ~ City)
+
+Barren_FE7.glm <- glm( lsales ~ lacres + City + Upper + Percent100 + green.treated +  yellow_red.treated + as.numeric(factor(YEAR*Precinct_N)) -1, data = barren.undeveloped.acreage)
+
+Barren_FE7.wild <- cluster.wild.glm(Barren_FE7.glm, dat = barren.undeveloped.acreage, cluster = ~clustervar)
+
+
+Barren_FE8.glm <- glm( lsales ~ lacres + City + Percent100 + green.treated +  yellow_red.treated + as.numeric(factor(YEAR*Precinct_N)) -1, data = barren.undeveloped.upper.acreage)
+
+Barren_FE8.wild <- cluster.wild.glm(Barren_FE8.glm, dat = barren.undeveloped.upper.acreage, cluster = ~ City)
+
+
+```
+
+```{r}
+### Pairs Cluster Bootstrapped p-values
+
+Barren_FE1.pairs <- cluster.bs.glm(Barren_FE1.glm, dat=barren, cluster=~clustervar, boot.reps = 10000)
+
+Barren_FE3.pairs <- cluster.bs.glm(Barren_FE3.glm, dat=barren.undeveloped, cluster=~clustervar, boot.reps = 10000)
+
+Barren_FE7.pairs <- cluster.bs.glm(Barren_FE7.glm, dat=barren.undeveloped.acreage, cluster=~clustervar, boot.reps = 10000)
+
+Barren_FE8.pairs <- cluster.bs.glm(Barren_FE8.glm, dat=barren.undeveloped.upper.acreage, cluster = ~ City, boot.reps = 10000)
+
+
+```
+
+
+Difference in Difference Estimates
+
+```{r}
+
+Barren_DiD1 <- glm( lsales ~ lacres + YEAR*Upper + md2*Upper + Percent100, data = barren)
+summary(Barren_DiD1)
+
+Barren_DiD2 <- glm( lsales ~ lacres + YEAR*Upper + md2*Upper + Percent100, data = barren.undeveloped)
+summary(Barren_DiD2)
+
+Barren_DiD1.CRSE <- cluster.vcov(Barren_DiD1, barren$clustervar)
+coeftest(Barren_DiD1, Barren_DiD1.CRSE)
+
+Barren_DiD2.CRSE <- cluster.vcov(Barren_DiD2, barren.undeveloped$clustervar)
+coeftest(Barren_DiD2, Barren_DiD2.CRSE)
+
+
+```
+
+
+Wild Bootstrap Randomization Inference
+
+# ``` {r}
+# require(parallel)
+# options(boot.ncpus=8)
+# 
+# ### Step One: Estimate DiD equation and calculate CRVE t-statistic for coefficient of interest.
+# 
+# Barren_DiD1.CRSE <- cluster.vcov(Barren_DiD1, barren$clustervar)
+# 
+# coeftest(Barren_DiD1, Barren_DiD1.CRSE)
+# 
+# ### Step Two: Re-estimate DiD imposing the null restriction on the coefficient of interest.
+# 
+# Barren_DiD1_restricted <- glm( lsales ~ lacres + YEAR*Upper + Percent100 + md2*Upper, offset=(0*md2*Upper), data = barren)
+# Barren_DiD1_restricted
+# 
+# ### Step Three: Create a bootstrap sample with B wild cluster bootstrap replications using restricted estimates from Step Two.
+# 
+# wcb.DiD1 <- wcbDGP(Barren_DiD1_restricted, barren$clustervar, R=10000, boot_type="wild", 
+#     wild_type= function() sample(c(-sqrt(3/2), -1, -sqrt(1/2), sqrt(1/2), 1, sqrt(3/2)), 1), parallel=TRUE)
+# 
+# wcb.DiD1.tstats <- wcb.DiD1[[1]]$t
+# 
+# ### Step Four: Randomization Inference over md2
+# 
+# barren$md2.RI <- (1-barren$md2)
+# Barren_DiD1_chg.treat <- glm( lsales ~ lacres + YEAR*Upper + Percent100 + md2.RI*Upper, data=barren)
+# Barren.DiD1.RI <- wcbDGP(Barren_DiD1_chg.treat, barren$clustervar, R=10000, boot_type="xy", parallel=TRUE)
+# 
+# DiD1.RI.tstats <- Barren.DiD1.RI[[1]]$t
+# summary(DiD1.RI.tstats)
+# 
+#   ## Observe number of NA's for variable of interest.
+# 
+# ### Step Five: Calculate the Bootstrap p-value
+# 
+# sum(abs(wcb.DiD1.tstats[,8]) >= abs(-3.5716))
+# sum(abs(DiD1.RI.tstats[,8]) >= abs(-3.5716), na.rm=TRUE)
+# 
+#   ## p-value is total number of bootstraps 1/(B + B - NA's) times sum of count bootstrapped t > original t.
+# 
+# 
+# #################################
+# 
+# Barren_DiD2.CRSE <- cluster.vcov(Barren_DiD2, barren.undeveloped$clustervar)
+# 
+# coeftest(Barren_DiD2, Barren_DiD2.CRSE)
+# 
+# Barren_DiD2_restricted <- glm( lsales ~ lacres + YEAR*Upper + Percent100 + md2*Upper, offset=(0*md2*Upper), data = barren.undeveloped)
+# Barren_DiD2_restricted
+# 
+# wcb.DiD2 <- wcbDGP(Barren_DiD2_restricted, barren.undeveloped$clustervar, R=10000, boot_type="wild", 
+#     wild_type= function() sample(c(-sqrt(3/2), -1, -sqrt(1/2), sqrt(1/2), 1, sqrt(3/2)), 1), parallel=TRUE)
+# 
+# wcb.DiD2.tstats <- wcb.DiD2[[1]]$t
+# 
+# barren.undeveloped$md2.RI <- (1-barren.undeveloped$md2)
+# Barren_DiD2_chg.treat <- glm( lsales ~ lacres + YEAR*Upper + Percent100 + md2.RI*Upper, data=barren.undeveloped)
+# Barren.DiD2.RI <- wcbDGP(Barren_DiD2_chg.treat, barren.undeveloped$clustervar, R=10000, boot_type="xy", parallel=TRUE)
+# 
+# DiD2.RI.tstats <- Barren.DiD2.RI[[1]]$t
+# summary(DiD2.RI.tstats)
+# 
+# sum(abs(wcb.DiD2.tstats[,8]) >= abs(-4.5342))
+# sum(abs(DiD2.RI.tstats[,8]) >= abs(-4.5342), na.rm=TRUE)
+# 
+#   ## p-value is total number of bootstraps 1/(B + B - NA's) times sum of count bootstrapped t > original t.
+# 
+#```
